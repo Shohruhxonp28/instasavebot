@@ -22,6 +22,11 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(na
 logger = logging.getLogger(__name__)
 
 
+from aiohttp import web
+
+async def health_check(request):
+    return web.Response(text="Bot is running!")
+
 async def main() -> None:
     if not config.bot_token:
         raise RuntimeError("BOT_TOKEN is not set")
@@ -31,9 +36,6 @@ async def main() -> None:
 
     redis = Redis(host=config.redis_host, port=config.redis_port, db=config.redis_db)
 
-    # Order: user context first (so lang/bot_user are available everywhere),
-    # then throttling (cheap, drop spam early), then the subscription gate
-    # (needs a Telegram API round trip, so it should run after cheaper checks).
     dp.message.middleware(UserContextMiddleware())
     dp.callback_query.middleware(UserContextMiddleware())
     dp.message.middleware(ThrottlingMiddleware(redis))
@@ -42,10 +44,23 @@ async def main() -> None:
 
     dp.include_router(get_root_router())
 
-    logger.info("Starting bot polling…")
+    logger.info("Starting bot polling and dummy web server…")
     await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Start dummy web server for Render health checks
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    import os
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+
